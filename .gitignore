@@ -1,0 +1,7 @@
+.cursor/
+__pycache__/
+*.py[cod]
+
+# Camera batches are hundreds of megabytes each.
+data_testing/*.mat
+data_testing/*.npz
