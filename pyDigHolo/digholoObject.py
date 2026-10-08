@@ -434,7 +434,7 @@ class DigHolo:
 
         shape=frameBuffer.shape
         if self._properties["FrameWidth"] != shape[-1] or self._properties["FrameHeight"] != shape[-2]:
-            raise ValueError(f"Buffer shape {shape} does not fit with digHoloFrame {self._properties["FrameHeight"]}x{self._properties["FrameWidth"]}")
+            raise ValueError(f"Buffer shape {shape} does not fit with digHoloFrame {self._properties['FrameHeight']}x{self._properties['FrameWidth']}")
 
         if len(shape)==2:
             if self._properties["batchCount"]!=1:
@@ -483,7 +483,7 @@ class DigHolo:
         shape = frameBuffer.shape
         if self._properties["FrameWidth"] != shape[-1] or self._properties["FrameHeight"] != shape[-2]:
             raise ValueError(
-                f"Buffer shape {shape} does not fit with digHoloFrame {self._properties["FrameHeight"]}x{self._properties["FrameWidth"]}")
+                f"Buffer shape {shape} does not fit with digHoloFrame {self._properties['FrameHeight']}x{self._properties['FrameWidth']}")
         if frameBuffer.ndim == 2:
             if self._properties["batchCount"] != 1:
                 raise ValueError(f"batchCount is not 1, but buffer shape is 2D")
