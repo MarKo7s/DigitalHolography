@@ -18,6 +18,7 @@ import numpy as np
 # Ok so I found a lib called ctypesgen that can look at a header file and make a python wrapper that can also include all the error
 # stuff so i have generated the python version of the header file with that. I need to test it to see how it goes.
 from . import digholoHeader as dh_dll
+from .digholoProperties import Properties
 
 class digholoMetrics(IntEnum):
     # COUNT = dh_dll.DIGHOLO_METRIC_COUNT           # just len(digholoMetrics)
@@ -38,41 +39,7 @@ class DigHolo:
     metricsenum = digholoMetrics
     @staticmethod
     def default_properties():
-        return {
-            "Wavelength": 1300e-9,
-            "WavelengthCount": 1, # i am a little surprise at this but there is no built in function that set the wavelength count it is set when and if you have a array of wavelength to go over.
-            "polCount": 2,
-            "batchCount": 1,
-            "AvgCount": 1,
-            "PixelSize": 20e-6,
-            "maxMG": 22,
-            "FrameWidth": 256, # automatically set during autoalign
-            "FrameHeight": 256, # automatically set during autoalign
-            "fftWindowSizeX": 256,
-            "fftWindowSizeY": 256,
-            "FFTRadius": 0.4,
-            "BeamCentreXPolH": 0,
-            "BeamCentreXPolV": 0,
-            "BeamCentreYPolH": 0,
-            "BeamCentreYPolV": 0,
-            "BasisWaistPolH": 1,
-            "BasisWaistPolV": 1,
-            "DefocusPolH": 0,
-            "DefocusPolV": 0,
-            "XTiltPolH": 0,
-            "XTiltPolV": 0,
-            "YTiltPolH": 0,
-            "YTiltPolV": 0,
-            "AutoAlignBeamCentre": 1,
-            "AutoAlignDefocus": 1,
-            "AutoAlignTilt": 1,
-            "AutoAlignBasisWaist": 1,
-            "AutoAlignFourierWindowRadius": 1,
-            "goalIdx": digholoMetrics.IL,
-            "basisType": 1,
-            "resolutionMode": 1,  ## same resolution as FFT input or native one after aperture cropping
-            "verbosity": 2,
-        }
+        return Properties.defaults()
 
     def __init__(self, consoleRedirectToFile=True, **kwargs):
         """
@@ -118,7 +85,8 @@ class DigHolo:
         """
         self._handleIdx = dh_dll.digHoloCreate()
         self._thread_feeder = None
-        self._properties = DigHolo.default_properties()  # default
+        self.props = Properties()
+        self._properties = self.props.as_dict()
         self.setProps(**kwargs)  # update self._properties and digholo.dll setProps
 
         if consoleRedirectToFile:
@@ -142,78 +110,8 @@ class DigHolo:
             ValueError: If any keys in kwargs are not valid properties.
         """
 
-        # Check for unknown keys
-        unknown_keys = set(kwargs.keys()) - set(self._properties.keys())
-        if unknown_keys:
-            log.warning(f"Unknown digholoProperties keys: {unknown_keys}")
-            for key in unknown_keys:
-                kwargs.pop(key)
-            # raise ValueError(f"Unknown digholoProperties keys: {unknown_keys}")
-
-        self._properties.update(kwargs) # just internal update of dictionary
-
-        # # just for TM?
-        # goalIdx= self._properties["goalIdx"]
-        # if goalIdx<0 or goalIdx>7:
-        #     goalIdx =0
-        #     print("Invaild goalIdx must be 0=>goalIdx<=7. goalIdx has been set to 0")
-        # basisType = self._properties["basisType"]
-        # if basisType<0 or basisType>2:
-        #     basisType =0
-        #     print("Invaild basisType must be 0=>basisType<=2. basisType has been set to 0")
-
-        dh_dll.digHoloConfigSetAutoAlignGoalIdx(self._handleIdx, self._properties["goalIdx"])
-        dh_dll.digHoloConfigSetBasisType(self._handleIdx, self._properties["basisType"])
-
-        dh_dll.digHoloConfigSetFrameDimensions(self._handleIdx, self._properties["FrameWidth"], self._properties["FrameHeight"])
-
-        dh_dll.digHoloConfigSetFramePixelSize(self._handleIdx, self._properties["PixelSize"])
-        dh_dll.digHoloConfigSetBatchCount(self._handleIdx, self._properties["batchCount"])
-        dh_dll.digHoloConfigSetBatchAvgCount(self._handleIdx, self._properties["AvgCount"])
-
-        
-        dh_dll.digHoloConfigSetWavelengthCentre(self._handleIdx, self._properties["Wavelength"])
-        dh_dll.digHoloConfigSetPolCount(self._handleIdx, self._properties["polCount"])
-           
-        dh_dll.digHoloConfigSetBasisGroupCount(self._handleIdx, self._properties["maxMG"])
-        
-
-        dh_dll.digHoloConfigSetfftWindowSizeX(self._handleIdx, self._properties["fftWindowSizeX"])
-        dh_dll.digHoloConfigSetfftWindowSizeY(self._handleIdx, self._properties["fftWindowSizeY"])
-    
-        dh_dll.digHoloConfigSetFourierWindowRadius(self._handleIdx, self._properties["FFTRadius"])
-        dh_dll.digHoloConfigSetIFFTResolutionMode(self._handleIdx, self._properties["resolutionMode"])
-
-        dh_dll.digHoloConfigSetBeamCentre(self._handleIdx, 0, 0, self._properties["BeamCentreXPolH"])
-        dh_dll.digHoloConfigSetBeamCentre(self._handleIdx, 0, 1, self._properties["BeamCentreXPolV"])
-        dh_dll.digHoloConfigSetBeamCentre(self._handleIdx, 1, 0, self._properties["BeamCentreYPolH"])
-        dh_dll.digHoloConfigSetBeamCentre(self._handleIdx, 1, 1, self._properties["BeamCentreYPolV"])
-        
-        dh_dll.digHoloConfigSetBasisWaist(self._handleIdx, 0, self._properties["BasisWaistPolH"])
-        dh_dll.digHoloConfigSetBasisWaist(self._handleIdx, 1, self._properties["BasisWaistPolV"])
-        
-        dh_dll.digHoloConfigSetDefocus(self._handleIdx, 0, self._properties["DefocusPolH"])
-        dh_dll.digHoloConfigSetDefocus(self._handleIdx, 1, self._properties["DefocusPolV"])
-        
-        dh_dll.digHoloConfigSetTilt(self._handleIdx, 0, 0, self._properties["XTiltPolH"])
-        dh_dll.digHoloConfigSetTilt(self._handleIdx, 0, 1, self._properties["XTiltPolV"])
-        dh_dll.digHoloConfigSetTilt(self._handleIdx, 1, 0, self._properties["YTiltPolH"])
-        dh_dll.digHoloConfigSetTilt(self._handleIdx, 1, 1, self._properties["YTiltPolV"])
-
-
-        AutoAlignBeamCentre = int(self._properties["AutoAlignBeamCentre"])
-        AutoAlignDefocus = int(self._properties["AutoAlignDefocus"])
-        AutoAlignTilt = int(self._properties["AutoAlignTilt"])
-        AutoAlignBasisWaist = int(self._properties["AutoAlignBasisWaist"])
-        AutoAlignFourierWindowRadius = int(self._properties["AutoAlignFourierWindowRadius"])
-
-        dh_dll.digHoloConfigSetAutoAlignBeamCentre(self._handleIdx, AutoAlignBeamCentre)
-        dh_dll.digHoloConfigSetAutoAlignDefocus(self._handleIdx, AutoAlignDefocus)
-        dh_dll.digHoloConfigSetAutoAlignTilt(self._handleIdx, AutoAlignTilt)
-        dh_dll.digHoloConfigSetAutoAlignBasisWaist(self._handleIdx, AutoAlignBasisWaist)
-        dh_dll.digHoloConfigSetAutoAlignFourierWindowRadius(self._handleIdx, AutoAlignFourierWindowRadius)
-
-        dh_dll.digHoloConfigSetVerbosity(self._handleIdx, self._properties["verbosity"])
+        self.props.update(**kwargs)
+        self.props.apply(dh_dll, self._handleIdx)
 
 
     def getProps(self, print_it=False):
@@ -222,53 +120,12 @@ class DigHolo:
         then returns that dictionary.
         """
 
-        # todo: update frame dimensions?
-
-        self._properties["Wavelength"] = dh_dll.digHoloConfigGetWavelengthCentre(self._handleIdx)
-        # self._properties["WavelengthOrdering"] = dh_dll.digHoloConfigGetWavelengthOrdering(self._handleIdx)
-
-        self._properties["polCount"]   = int(dh_dll.digHoloConfigGetPolCount(self._handleIdx))
-        self._properties["maxMG"]      = int(dh_dll.digHoloConfigGetBasisGroupCount(self._handleIdx))
-        self._properties["batchCount"] = int(dh_dll.digHoloConfigGetBatchCount(self._handleIdx))
-        self._properties["AvgCount"]   = int(dh_dll.digHoloConfigGetBatchAvgCount(self._handleIdx))
-
- 
-        self._properties["fftWindowSizeY"] = dh_dll.digHoloConfigGetfftWindowSizeY(self._handleIdx)
-        self._properties["fftWindowSizeX"] = dh_dll.digHoloConfigGetfftWindowSizeX(self._handleIdx)
-
-        self._properties["FFTRadius"]      = dh_dll.digHoloConfigGetFourierWindowRadius(self._handleIdx)
-        self._properties["resolutionMode"] = dh_dll.digHoloConfigGetIFFTResolutionMode(self._handleIdx)
-        
-        self._properties["BeamCentreXPolH"] = dh_dll.digHoloConfigGetBeamCentre(self._handleIdx, 0, 0)
-        self._properties["BeamCentreXPolV"] = dh_dll.digHoloConfigGetBeamCentre(self._handleIdx, 0, 1)
-        self._properties["BeamCentreYPolH"] = dh_dll.digHoloConfigGetBeamCentre(self._handleIdx, 1, 0)
-        self._properties["BeamCentreYPolV"] = dh_dll.digHoloConfigGetBeamCentre(self._handleIdx, 1, 1)
-        
-        self._properties["BasisWaistPolH"] = dh_dll.digHoloConfigGetBasisWaist(self._handleIdx, 0)
-        self._properties["BasisWaistPolV"] = dh_dll.digHoloConfigGetBasisWaist(self._handleIdx, 1)
-        
-        self._properties["DefocusPolH"] = dh_dll.digHoloConfigGetDefocus(self._handleIdx, 0)
-        self._properties["DefocusPolV"] = dh_dll.digHoloConfigGetDefocus(self._handleIdx, 1)
-
-        self._properties["XTiltPolH"] = dh_dll.digHoloConfigGetTilt(self._handleIdx, 0, 0)
-        self._properties["XTiltPolV"] = dh_dll.digHoloConfigGetTilt(self._handleIdx, 0, 1)
-        
-        self._properties["YTiltPolH"] = dh_dll.digHoloConfigGetTilt(self._handleIdx, 1, 0)
-        self._properties["YTiltPolV"] = dh_dll.digHoloConfigGetTilt(self._handleIdx, 1, 1)
-
-        self._properties["AutoAlignBeamCentre"]         = dh_dll.digHoloConfigGetAutoAlignBeamCentre(self._handleIdx)
-        self._properties["AutoAlignDefocus"]            = dh_dll.digHoloConfigGetAutoAlignDefocus(self._handleIdx)
-        self._properties["AutoAlignTilt"]               = dh_dll.digHoloConfigGetAutoAlignTilt(self._handleIdx)
-        self._properties["AutoAlignBasisWaist"]         = dh_dll.digHoloConfigGetAutoAlignBasisWaist(self._handleIdx)
-        self._properties["AutoAlignFourierWindowRadius"] = dh_dll.digHoloConfigGetAutoAlignFourierWindowRadius(self._handleIdx)
-
-        self._properties["goalIdx"] = dh_dll.digHoloConfigGetAutoAlignGoalIdx(self._handleIdx)
-        self._properties["basisType"] = dh_dll.digHoloConfigGetBasisType(self._handleIdx)
+        self.props.read(dh_dll, self._handleIdx)
 
         if print_it:
-            self.printProps(self._properties)
+            self.printProps(self.props.as_dict())
 
-        return self._properties
+        return self.props.as_dict()
 
     def printProps(self, props=None):
         if not props:
@@ -282,16 +139,14 @@ class DigHolo:
 
     def setRefCalibrationIntensity(self, cal):
         calPtr = cal.ctypes.data_as(ctypes.POINTER(ctypes.c_ushort))
-        wavelengthCount = self._properties["WavelengthCount"]
-        width = self._properties["FrameWidth"]
-        height = self._properties["FrameHeight"]
+        wavelengthCount, width, height = self.props.get_calibration_frame()
 
         dh_dll.digHoloConfigSetRefCalibrationIntensity(self._handleIdx, calPtr, wavelengthCount, width, height)
 
     def setBatchCalibration(self, cal_array, polCount=1, batchCount=None):
         cal_array = np.atleast_2d(cal_array)   # shape (1, batchcount)
         if batchCount is None:
-            batchCount = self._properties["BatchCount"]
+            batchCount = self.props.get_batch_count()
 
         if cal_array.shape != (polCount, batchCount):
             raise ValueError("Invalid shape for batch calibration, has to be polCount x batchCount")
@@ -353,33 +208,17 @@ class DigHolo:
         Returns:
 
         """
-        shape=frameBuffer.shape
-        if len(shape)==2:
-            self._properties["batchCount"]=1
-            # self._properties["maxMG"]=1
-            self._properties["FrameWidth"]=int(shape[1])
-            self._properties["FrameHeight"]=int(shape[0])
-
-        elif len(shape)==3:
-            if not AvgCount:
-                self._properties["batchCount"]=shape[0]
-            else: 
-                self._properties["batchCount"]=batchCount
-                self._properties["AvgCount"]=AvgCount
-            self._properties["FrameWidth"]=shape[2]
-            self._properties["FrameHeight"]=shape[1]
-        else:
-            print("AutoAlign NOT run.\n The Camera frames that you have passed are not the correct dims. They should be [batchCount,CamHieght,CamWidth].")
+        if not self.props.adopt_frame_shape(frameBuffer.shape, batchCount, AvgCount):
             return
 
-        self.setProps() # update changed properties
+        self.props.apply(dh_dll, self._handleIdx)
 
         frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))        
         if AvgCount:
-           dh_dll.digHoloSetBatchAvg(self._handleIdx, int(self._properties["batchCount"]), frameBufferPtr,
-                                                            self._properties["AvgCount"], AvgMode)
+           dh_dll.digHoloSetBatchAvg(self._handleIdx, self.props.get_batch_count(), frameBufferPtr,
+                                                            self.props.get_avg_count(), AvgMode)
         else:
-            dh_dll.digHoloSetBatch(self._handleIdx,int(self._properties["batchCount"]),frameBufferPtr)
+            dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
 
 
 
@@ -403,7 +242,7 @@ class DigHolo:
         #     metrics_ptr = dh_dll.digHoloAutoAlignGetMetrics(self._handleIdx, metricIdx)
         #     metrics[metricIdx,:] = np.ctypeslib.as_array(metrics_ptr, shape=(int(self._properties["WavelengthCount"])+1,))
 
-        wavelength_count = self._properties["WavelengthCount"] + 1
+        wavelength_count = self.props.get_metric_length()
         metrics = np.array([
             np.ctypeslib.as_array(dh_dll.digHoloAutoAlignGetMetrics(self._handleIdx, i), shape=(wavelength_count,))
             for i in digholoMetrics
@@ -432,28 +271,14 @@ class DigHolo:
 
         """
 
-        shape=frameBuffer.shape
-        if self._properties["FrameWidth"] != shape[-1] or self._properties["FrameHeight"] != shape[-2]:
-            raise ValueError(f"Buffer shape {shape} does not fit with digHoloFrame {self._properties['FrameHeight']}x{self._properties['FrameWidth']}")
-
-        if len(shape)==2:
-            if self._properties["batchCount"]!=1:
-                raise ValueError(f"batchCount is not 1, but buffer shape is 2D")
-
-        elif len(shape)==3:
-            if AvgCount>1:
-                self._properties["batchCount"]=batchCount
-                self._properties["AvgCount"]=AvgCount
-            else:
-                self._properties["batchCount"]=shape[0]
-        else:
-            raise ValueError("Invalid shape")
+        self.props.check_batch_shape(frameBuffer.shape, batchCount, AvgCount)
+        self.props.apply_batch_counts(dh_dll, self._handleIdx)
 
         frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        dh_dll.digHoloSetBatch(self._handleIdx, int(self._properties["batchCount"]), frameBufferPtr)
+        dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
         if AvgCount>1:
-           dh_dll.digHoloSetBatchAvg(self._handleIdx, int(self._properties["batchCount"]), frameBufferPtr,
-                                        self._properties["AvgCount"], AvgMode)
+           dh_dll.digHoloSetBatchAvg(self._handleIdx, self.props.get_batch_count(), frameBufferPtr,
+                                        self.props.get_avg_count(), AvgMode)
 
 
 
@@ -463,8 +288,7 @@ class DigHolo:
         resulting fields.
         """
         # can be replaced by self.basisGetCoefs?
-        batchCount_c = ctypes.c_int(int(self._properties["batchCount"]))
-        polCount_c = ctypes.c_int(self._properties["polCount"])
+        batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
         modeCount_c= ctypes.c_int()
         CoefptrOut = dh_dll.digHoloProcessBatch(self._handleIdx,ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c))
 
@@ -480,25 +304,15 @@ class DigHolo:
 
 
     def proccesBatchFrequencySweepLinear(self, frameBuffer, lambdaStart: float, lambdaStop: float, lambdaCount: int):
-        shape = frameBuffer.shape
-        if self._properties["FrameWidth"] != shape[-1] or self._properties["FrameHeight"] != shape[-2]:
-            raise ValueError(
-                f"Buffer shape {shape} does not fit with digHoloFrame {self._properties['FrameHeight']}x{self._properties['FrameWidth']}")
-        if frameBuffer.ndim == 2:
-            if self._properties["batchCount"] != 1:
-                raise ValueError(f"batchCount is not 1, but buffer shape is 2D")
-        elif frameBuffer.ndim == 3:
-            self._properties["batchCount"] = shape[0]
-        else:
-            raise ValueError("Invalid shape")
+        self.props.check_batch_shape(frameBuffer.shape)
+        self.props.apply_batch_counts(dh_dll, self._handleIdx)
 
         frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        dh_dll.digHoloSetBatch(self._handleIdx, int(self._properties["batchCount"]), frameBufferPtr)
+        dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
 
 
         # proccess batch
-        batchCount_c = ctypes.c_int(int(self._properties["batchCount"]))
-        polCount_c = ctypes.c_int(self._properties["polCount"])
+        batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
         modeCount_c = ctypes.c_int()
         CoefptrOut = dh_dll.digHoloProcessBatchFrequencySweepLinear(self._handleIdx,
                                                               ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c),
@@ -596,8 +410,7 @@ class DigHolo:
         if wavelengths is None:
             return self.getWavelengths()
         else:
-            self._properties["Wavelength"] = wavelengths[0]
-            self._properties["WavelengthCount"] = wavelengths.shape[0]
+            self.props.set_wavelength_axis(wavelengths[0], wavelengths.shape[0])
             return wavelengths
 
     
@@ -652,7 +465,7 @@ class DigHolo:
         return dh_dll.digHoloAutoAlignCalcMetrics(self._handleIdx)
 
     def basisGetMatric(self):
-        wavelength_count = self._properties["WavelengthCount"] + 1
+        wavelength_count = self.props.get_metric_length()
         metrics = np.array([
             np.ctypeslib.as_array(
                 dh_dll.digHoloAutoAlignGetMetrics(self._handleIdx, i),
@@ -915,11 +728,15 @@ class DigHolo:
             self._thread_feeder = None
 
     def save_properties_to_json(self, path, print_it=False):
-        if ".json" not in path:
-            path += ".json"
+        # Check fitst Path exist otherwise create it
+        path = Path(path)
+        if path.suffix != ".json":
+            path = path.with_suffix(".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
         self.getProps(print_it=print_it) # just update to be sure, there are last props from digiHolo
-        with open(path, 'w') as f:
-            json.dump(self._properties, f, indent=4)
+        with open(str(path), 'w') as f:
+            json.dump(self.props.as_dict(), f, indent=4)
 
     def load_properties_from_json(self, path, print_it=True):
         if ".json" not in path:

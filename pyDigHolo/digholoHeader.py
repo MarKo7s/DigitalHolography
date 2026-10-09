@@ -865,9 +865,15 @@ del loaderclass
 add_library_search_dirs([])
 
 # Daniel NOTE I have added these lines so that the digholo dll is visible, I couldnt get ctypesgens to do it.
+# I thought the way of looking for the dll was too convoluted, so I just added the path to the dll to the header file.
+# Currently hardcoded to v1.0.0
 #####################################################################
-from importlib.resources import files
-dll_path = str(files("modelabdrivers.digHolo").joinpath("digHolo_v1.0.0/bin/Win64/digHolo.dll"))
+from pathlib import Path
+
+dll_path = str(
+    Path(__file__).resolve().parent
+    / "digHolo_v1.0.0" / "bin" / "Win64" / "digHolo.dll"
+)
 loader = LibraryLoader()
 _libs = {"digHolo": loader(dll_path)}
 #####################################################################
