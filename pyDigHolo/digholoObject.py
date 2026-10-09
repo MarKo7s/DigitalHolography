@@ -7,6 +7,7 @@ import ctypes
 from enum import IntEnum
 import json
 import logging
+from pathlib import Path
 
 
 log = logging.getLogger("digHolo")
@@ -18,7 +19,11 @@ import numpy as np
 # Ok so I found a lib called ctypesgen that can look at a header file and make a python wrapper that can also include all the error
 # stuff so i have generated the python version of the header file with that. I need to test it to see how it goes.
 from . import digholoHeader as dh_dll
+from . import digholoResults as results
+from . import digholoUtilities as utilities
+from .digholoLogger import ConsoleLogger
 from .digholoProperties import Properties
+from .digholoStreamer import DigHoloFeeder
 
 class digholoMetrics(IntEnum):
     # COUNT = dh_dll.DIGHOLO_METRIC_COUNT           # just len(digholoMetrics)
@@ -430,290 +435,40 @@ class DigHolo:
         return transformMatrix_as_float
         
     def basisGetCoefs(self):
-        """
-        Retrieve the basis coefficients from the DLL and convert them to a complex NumPy array.
-
-        The function uses the digHolo DLL to obtain holographic mode coefficients that are returned
-        as interleaved real and imaginary float values (i.e., [Re0, Im0, Re1, Im1, ...]).
-
-        It:
-        - Calls the DLL to obtain a pointer to the raw coefficient data.
-        - Wraps the pointer as a NumPy array with shape (batchCount, 2 * modeCount * polCount).
-        - Splits the interleaved array into complex numbers using slicing.
-
-        Returns:
-            coefs (np.ndarray): A complex NumPy array of shape (batchCount, modeCount * polCount).
-            batchCount (int): Number of batches.
-            modeCount (int): Number of modes per polarization.
-            polCount (int): Number of polarizations.
-        """
-        batchCount_c = ctypes.c_int()
-        modeCount_c = ctypes.c_int()
-        polCount_c = ctypes.c_int()
-
-        CoefptrOut = dh_dll.digHoloBasisGetCoefs(self._handleIdx, ctypes.byref(batchCount_c), ctypes.byref(modeCount_c), ctypes.byref(polCount_c))
-        coefs_raw = np.ctypeslib.as_array(CoefptrOut, shape=(batchCount_c.value,2*modeCount_c.value*polCount_c.value))
-
-        # Split interleaved real/imag to complex: real = [::2], imag = [1::2]
-        # 0::2 means: start at index 0, take every 2nd element → real part
-        # 1::2 means: start at index 1, take every 2nd element → imaginary part
-        coefs = coefs_raw[:,0::2] + 1j*coefs_raw[:,1::2]
-
-        return coefs, batchCount_c.value, modeCount_c.value, polCount_c.value
+        """Retrieve the basis coefficients from the DLL as a complex NumPy array."""
+        return results.basisGetCoefs(dh_dll, self._handleIdx)
 
     def autoAlignCalcMetrics(self):
         return dh_dll.digHoloAutoAlignCalcMetrics(self._handleIdx)
 
     def basisGetMatric(self):
-        wavelength_count = self.props.get_metric_length()
-        metrics = np.array([
-            np.ctypeslib.as_array(
-                dh_dll.digHoloAutoAlignGetMetrics(self._handleIdx, i),
-                shape=(wavelength_count,)
-            )
-            for i in digholoMetrics
-        ])
-        return metrics
+        return results.basisGetMatric(dh_dll, self._handleIdx, self.props.get_metric_length(), digholoMetrics)
 
     def getFields16(self):
-        batchCount_c = ctypes.c_int()
-        polCount_c = ctypes.c_int()
-        fieldWidth_ptr=ctypes.c_int()
-        fieldHeight_ptr=ctypes.c_int()
-
-        fieldR_ptr = ctypes.POINTER(ctypes.c_short)()
-        fieldI_ptr = ctypes.POINTER(ctypes.c_short)()
-        fieldScale_ptr = ctypes.POINTER(ctypes.c_float)()
-
-        # x and y pointers (if you need the axis arrays too)
-        x_ptr = ctypes.POINTER(ctypes.c_float)()
-        y_ptr = ctypes.POINTER(ctypes.c_float)()
-
-
-
-        dh_dll.digHoloGetFields16(self._handleIdx,
-                                    ctypes.byref(batchCount_c),
-                                    ctypes.byref(polCount_c),
-                                    ctypes.byref(fieldR_ptr),
-                                    ctypes.byref(fieldI_ptr),
-                                    ctypes.byref(fieldScale_ptr),
-                                    ctypes.byref(x_ptr),ctypes.byref(y_ptr),
-                                    ctypes.byref(fieldWidth_ptr),ctypes.byref(fieldHeight_ptr))
-        
-        width= np.int32(fieldWidth_ptr)
-        height= np.int32(fieldHeight_ptr)
-        
-        fieldR = np.ctypeslib.as_array(fieldR_ptr,shape=(batchCount_c.value*polCount_c.value,height,width))
-        fieldI = np.ctypeslib.as_array(fieldI_ptr,shape=(batchCount_c.value*polCount_c.value,height,width)) 
-        fieldScale = np.ctypeslib.as_array(fieldScale_ptr,shape=(polCount_c.value,batchCount_c.value)) 
-        y = np.ctypeslib.as_array(y_ptr,shape=(1,height)) 
-        x = np.ctypeslib.as_array(x_ptr,shape=(1,width)) 
-        
-        return fieldR, fieldI, fieldScale, x, y
+        return results.getFields16(dh_dll, self._handleIdx)
     
     def getFields(self):
-        """
-        Retrieves the reconstructed field(s) from the library.
-        Returns:
-            fields: A numpy array of shape (batchCount, polCount, width, height)
-                    containing complex-valued field data.
-        """
-        # Prepare pointers/variables to store outputs from the DLL
-        batchCount_c = ((ctypes.c_int))()
-        polCount_c   = ((ctypes.c_int))()
-        w_c          = ((ctypes.c_int))()
-        h_c          = ((ctypes.c_int))()
-
-        # x and y pointers (if you need the axis arrays too)
-        xPtr = (ctypes.POINTER(ctypes.c_float))()
-        yPtr = (ctypes.POINTER(ctypes.c_float))()
-
-        # Call digHoloGetFields
-        ptrOut = dh_dll.digHoloGetFields(
-            self._handleIdx,
-            ctypes.byref(batchCount_c),
-            ctypes.byref(polCount_c),
-            ctypes.byref(xPtr),ctypes.byref(yPtr),
-            ctypes.byref(w_c),ctypes.byref(h_c)
-        )
-
-        # Convert to Python ints
-        batchCount = batchCount_c.value
-        polCount   = polCount_c.value
-
-        w          = w_c.value
-        h          = h_c.value
-
-        # Convert the returned pointer into a NumPy array.
-        # The library packs real/imag in the last dimension => shape=(batchCount, polCount, w, 2*h).
-        raw_fields = np.ctypeslib.as_array(ptrOut, shape=(batchCount, polCount, w, h*2))
-
-        # Convert interleaved [Re,Im] into a single complex array
-        fields = raw_fields[:, :, :, 0::2] + 1j * raw_fields[:, :, :, 1::2]
-
-        return fields
+        """Reconstructed fields, shape (batchCount, polCount, width, height), complex."""
+        return results.getFields(dh_dll, self._handleIdx)
 
 
     def basisGetFields(self):
-        # Prepare pointers/variables to store outputs from the DLL
-        batchCount_c = ((ctypes.c_int))()
-        polCount_c   = ((ctypes.c_int))()
-        w_c          = ((ctypes.c_int))()
-        h_c          = ((ctypes.c_int))()
-
-        # x and y pointers (if you need the axis arrays too)
-        xPtr = (ctypes.POINTER(ctypes.c_float))()
-        yPtr = (ctypes.POINTER(ctypes.c_float))()
-
-        # Call digHoloGetFields
-        ptrOut = dh_dll.digHoloBasisGetFields(
-            self._handleIdx,
-            ctypes.byref(batchCount_c),
-            ctypes.byref(polCount_c),
-            ctypes.byref(xPtr),ctypes.byref(yPtr),
-            ctypes.byref(w_c),ctypes.byref(h_c)
-        )
-
-        # Convert to Python ints
-        batchCount = batchCount_c.value
-        polCount   = polCount_c.value
-
-        w          = w_c.value
-        h          = h_c.value
-
-        # Convert the returned pointer into a NumPy array.
-        # The library packs real/imag in the last dimension => shape=(batchCount, polCount, w, 2*h).
-        raw_fields = np.ctypeslib.as_array(ptrOut, shape=(batchCount, polCount, w, h*2))
-
-        # Convert interleaved [Re,Im] into a single complex array
-        fields = raw_fields[:, :, :, 0::2] + 1j * raw_fields[:, :, :, 1::2]
-
-        return fields
+        return results.basisGetFields(dh_dll, self._handleIdx)
 
     def getViewPort(self, idx: int, forceProcessing=0):
-        """
-        Visualises internal buffers. Renders an RGB bitmap based on what type of plot you want to see (displayMode).
-        • NONE 0
-        • CAMERAPLANE 1
-        • FOURIERPLANE 2
-        • FOURIERPLANEDB 3
-        • FOURIERWINDOW 4
-        • FOURIERWINDOWABS 5
-        • FIELDPLANE 6
-        • FIELDPLANEABS 7
-        • FIELDPLANEMODE 8
-        • COUNT 9
-        • NAMELENGTH 1024
-        Args:
-            idx: 0-9 or 1024 representing viewport mode
-            forceProcessing: 0 if you dont want to process and to just take last buffer from last process
-        :return:
-            viewport: np.array of RGB bitmap
-            windowString: list of strings which can
-            serve as a window title containing basic information
-        """
-        if idx not in range(0, 10):
-            raise ValueError(f"Viewport index {idx} is not valid")
-        windowString = ((ctypes.c_char_p))()
-        ViewPortHeight = ctypes.c_int(0)
-        ViewPortWidth = ctypes.c_int(0)
-        ViewPortPtr = dh_dll.digHoloGetViewport(int(self._handleIdx), idx, forceProcessing,
-                                                  ctypes.byref(ViewPortWidth),
-                                                  ctypes.byref(ViewPortHeight), ctypes.byref(windowString))
-        ViewPortWidth = np.int32(ViewPortWidth)
-        ViewPortHeight = np.int32(ViewPortHeight)
-        try:
-            viewport = np.ctypeslib.as_array(ViewPortPtr, shape=(ViewPortHeight, ViewPortWidth, 3))
-            power_str, dimensions_str = str(windowString.value.decode('utf-8')).split('\t')
-            unit_name, power_value_str = power_str.split(' : ')
-            return viewport.copy(), [unit_name, power_value_str, dimensions_str]
-        except:
-            log.error(f"The most probably you have not run any frame processing yet")
-            return None
+        """RGB bitmap of an internal buffer. idx 0-9 selects the viewport."""
+        return results.getViewPort(dh_dll, self._handleIdx, idx, forceProcessing)
 
 
 
     def getFourierPlaneFull(self):
-        """
-        Retrieves the full Fourier plane for each field.
-        Returns:
-            fourierPlanes: A numpy array of shape 
-                        (batchCount, polCount, FourierHeight, ((FourierWidth//2)+1)*2)
-                        containing complex-valued data for the full Fourier plane.
-        """
-        # Prepare pointers/variables
-        batchCount_c = ctypes.c_int()
-        polCount_c   = ctypes.c_int()
-        FourierWidth_c  = ctypes.c_int()
-        FourierHeight_c = ctypes.c_int()
-
-        # Call digHoloGetFourierPlaneFull
-        FourierPtrOut = dh_dll.digHoloGetFourierPlaneFull(
-            self._handleIdx,
-            ctypes.byref(batchCount_c),
-            ctypes.byref(polCount_c),
-            ctypes.byref(FourierWidth_c),
-            ctypes.byref(FourierHeight_c)
-        )
-
-        # Convert to Python ints
-        batchCount    = batchCount_c.value
-        polCount      = polCount_c.value
-        FourierWidth  = FourierWidth_c.value
-        FourierHeight = FourierHeight_c.value
-
-        # Convert pointer to NumPy array
-        # The library returns real+imag in last dimension => shape=(..., 2).
-        # Typically, shape = (batchCount, polCount, FourierHeight, ((FourierWidth//2)+1)*2).
-        raw_fourier = np.ctypeslib.as_array(
-            FourierPtrOut,
-            shape=(batchCount, polCount, FourierHeight, ((FourierWidth // 2) + 1)*2)
-        )
-
-        # Convert interleaved [Re,Im] into complex
-        fourierPlanes = raw_fourier[:, :, :, 0::2] + 1j * raw_fourier[:, :, :, 1::2]
-
-        return fourierPlanes
+        """Full Fourier plane for each field, complex."""
+        return results.getFourierPlaneFull(dh_dll, self._handleIdx)
 
 
     def getFourierPlaneWindow(self):
-        """
-        Retrieves the (windowed) Fourier plane for each field.
-        Returns:
-            fourierPlanesWin: A numpy array of shape 
-                            (batchCount, polCount, FourierWidthWindow, FourierHeightWindow)
-                            containing complex-valued data for the *windowed* Fourier plane.
-        """
-        # Prepare pointers/variables
-        batchCount_c = ctypes.c_int()
-        polCount_c   = ctypes.c_int()
-        wWin_c       = ctypes.c_int()
-        hWin_c       = ctypes.c_int()
-
-        # Call digHoloGetFourierPlaneWindow
-        FourierPtrOut_Win = dh_dll.digHoloGetFourierPlaneWindow(
-            self._handleIdx,
-            ctypes.byref(batchCount_c),
-            ctypes.byref(polCount_c),
-            ctypes.byref(wWin_c),
-            ctypes.byref(hWin_c)
-        )
-
-        # Convert to Python ints
-        batchCount = batchCount_c.value
-        polCount   = polCount_c.value
-        wWin       = wWin_c.value
-        hWin       = hWin_c.value
-
-        # Convert pointer to NumPy array
-        # Real/imag data interleaved => shape=(batchCount, polCount, wWin, 2*hWin).
-        raw_fourier_win = np.ctypeslib.as_array(
-            FourierPtrOut_Win,
-            shape=(batchCount, polCount, wWin, hWin*2)
-        )
-        fourierPlanesWin = raw_fourier_win[:, :, :, 0::2] + 1j * raw_fourier_win[:, :, :, 1::2]
-
-        return fourierPlanesWin
+        """Windowed Fourier plane for each field, complex."""
+        return results.getFourierPlaneWindow(dh_dll, self._handleIdx)
 
     def startThread(self, cam, loop_period=0.05, cam_rows_range=(0, 256)):
         if self._thread_feeder is None:
@@ -746,265 +501,23 @@ class DigHolo:
         self.setProps(**properties)
         return self.getProps(print_it=print_it)
 
+
     @staticmethod
-    def interleave_complex64_to_float32(matrix: np.ndarray) -> np.ndarray:
-        """Convert a complex64 matrix to a float32 array with interleaved [real, imag]"""
-        # assert matrix.dtype == np.complex64
-        # flat = matrix
-        interleaved = np.empty((matrix.shape[0], matrix.shape[1]* 2), dtype=np.float32)
-        interleaved[:,0::2] = matrix.real
-        interleaved[:,1::2] = matrix.imag
-        return interleaved
+    def interleave_complex64_to_float32(matrix):
+        return utilities.interleave_complex64_to_float32(matrix)
 
     @staticmethod
     def mode_group(mode_idx):
-        # Solve n(n+1)/2 = total_modes → n = floor((-1 + sqrt(1 + 8 * total_modes)) / 2)
-        # return int((-1 + np.sqrt(1 + 8 * mode_idx)) // 2)
-        return np.floor((-1 + np.sqrt(1 + 8 * mode_idx)) / 2).astype(int)
+        return utilities.mode_group(mode_idx)
 
     @staticmethod
     def mode_idx(mg):
-        return mg * (mg + 1) // 2
+        return utilities.mode_idx(mg)
 
     @staticmethod
     def calc_crosstalk(pol_coeffs, return_in_db=False):
-        """
-        Coeffs can be shape (1, N), (N,) or shape (P, N) or (B, N) or shape (B, P, N) (batch).
-        Args:
-            pol_coeffs: complex coeffs of mode fields for one polarisation
-        Returns:
-            dict of params, each param is dim=1 if P=1/0 else dim=2 for both pols
-        """
-        pol_coeffs = np.squeeze(pol_coeffs)  # handles shape (1, N)
-        batch1pol = (pol_coeffs.ndim == 2 and pol_coeffs.shape[0] > 2)
-        only1pol = pol_coeffs.ndim == 1 or batch1pol
+        return utilities.calc_crosstalk(pol_coeffs, return_in_db)
 
-        if pol_coeffs.ndim < 3 or (pol_coeffs.ndim == 3 and pol_coeffs.shape[1] == 2):
-            abs_norm_coeffs = np.abs(pol_coeffs) ** 2  # use factor of two?
-            if pol_coeffs.ndim == 3 or batch1pol:
-                # in case of multiple fields
-                abs_norm_coeffs = np.mean(abs_norm_coeffs, axis=0)
-
-            if only1pol:
-                abs_norm_coeffs /= np.sum(abs_norm_coeffs)
-            else:  # norm along both pols separately
-                abs_norm_coeffs /= np.sum(abs_norm_coeffs, axis=1, keepdims=True)
-
-        else:
-            raise ValueError(f"Unexpected pol_coeffs shape: {pol_coeffs.shape}")
-
-        max_eff_mode = np.argmax(abs_norm_coeffs, axis=-1)
-        if only1pol:
-            max_eff_mode_value = abs_norm_coeffs[max_eff_mode]
-        else:
-            max_eff_mode_value = abs_norm_coeffs[np.arange(abs_norm_coeffs.shape[0]), max_eff_mode]
-
-        max_eff_mg = DigHolo.mode_group(max_eff_mode)
-        first_mg_mode = DigHolo.mode_idx(max_eff_mg)
-        first_next_mg_mode = DigHolo.mode_idx(max_eff_mg + 1)
-        # max_eff_mg_value = np.sum(abs_norm_coeffs[first_mg_mode:first_mg_mode + max_eff_mode + 1])
-        if only1pol:
-            max_eff_mg_value = np.sum(abs_norm_coeffs[first_mg_mode:first_next_mg_mode])
-        else:
-            max_eff_mg_value = np.array([
-                np.sum(abs_norm_coeffs[0, first_mg_mode[0]:first_next_mg_mode[0]]),
-                np.sum(abs_norm_coeffs[1, first_mg_mode[1]:first_next_mg_mode[1]])
-            ])
-
-        if return_in_db:
-            max_eff_mode_value = 10 * np.log10(max_eff_mode_value / (1 - max_eff_mode_value))
-            max_eff_mg_value = 10 * np.log10(max_eff_mg_value / (1 - max_eff_mg_value))
-        return max_eff_mode, max_eff_mode_value, max_eff_mg, max_eff_mg_value
-
-    # @staticmethod
-    # def calc_crosstalk(pol_coeffs, return_in_db=False):
-    #     """
-    #     Coeffs can be shape (1, N), (N,) or shape (P, N)
-    #     Args:
-    #         pol_coeffs: complex coeffs of mode fields for one polarisation
-    #     Returns:
-    #         dict of params
-    #     """
-    #     pol_coeffs = np.squeeze(pol_coeffs)  # handles shape (1, N)
-    #
-    #     if pol_coeffs.ndim < 3:
-    #         abs_norm_coeffs = np.abs(pol_coeffs)**2  # use factor of two?
-    #         abs_norm_coeffs /= np.sum(abs_norm_coeffs)
-    #         if pol_coeffs.ndim == 2:
-    #             # in case of multiple fields
-    #             abs_norm_coeffs = np.mean(abs_norm_coeffs, axis=0)
-    #     else:
-    #         raise ValueError(f"Unexpected pol_coeffs shape: {pol_coeffs.shape}")
-    #
-    #     max_eff_mode = np.argmax(abs_norm_coeffs)
-    #     max_eff_mode_value = abs_norm_coeffs[max_eff_mode]
-    #
-    #     max_eff_mg = DigHolo.mode_group(max_eff_mode)
-    #     first_mg_mode = DigHolo.mode_idx(max_eff_mg)
-    #     first_next_mg_mode = DigHolo.mode_idx(max_eff_mg + 1)
-    #     # max_eff_mg_value = np.sum(abs_norm_coeffs[first_mg_mode:first_mg_mode + max_eff_mode + 1])
-    #     max_eff_mg_value = np.sum(abs_norm_coeffs[first_mg_mode:first_next_mg_mode])
-    #
-    #     if return_in_db:
-    #         max_eff_mode_value = 10*np.log10(max_eff_mode_value/(1-max_eff_mode_value))
-    #         max_eff_mg_value = 10*np.log10(max_eff_mg_value/(1-max_eff_mg_value))
-    #     return max_eff_mode, max_eff_mode_value, max_eff_mg, max_eff_mg_value
-
-    @classmethod
-    def add_mg_strips(self, coefs_image:np.array, max_MG:int=22, pol_count:int=2, pol_gap:int=10):
-        """
-        todo: mode where pol are above each other not left and right
-        todo: separation styles, now just dots, adding group number texts above modegroup sectors
-
-        Adding mode group dot strips to coeffs rgb image for better readability
-        Args:
-            coefs_image: RGB image of the coefficients
-            max_MG: corresponding to mode count, use `mode_group` to get it
-            pol_count: output of DigHolo dll 1 or 2
-            pol_gap: gap in pixel between both pol images
-
-        Returns:
-
-        """
-        new_array_length = coefs_image.shape[1] + max_MG * pol_count + pol_gap
-        rgb_with_group_strips = np.zeros((coefs_image.shape[0], new_array_length, coefs_image.shape[2]),
-                                         dtype=coefs_image.dtype)
-
-        iter_idx = 0
-        mode_idx = 0
-        for pol in range(pol_count):
-            for mg in range(max_MG):
-                # generate mg pattern
-                # array_size = rgb_ceoffs.shape[0]
-                spacing = 2
-                # tile_spacing = 4
-                # pattern_length = (mg+1) * spacing + tile_spacing
-                # pattern = np.zeros(pattern_length, dtype=np.uint8)
-                # pattern[1:(mg+1) * spacing:spacing] = 200  # Set '1' every `spacing` steps
-                # pattern_n = array_size // pattern_length
-                # if pattern_n > 0:
-                #     final_pattern = np.tile(pattern, pattern_n)[:, None]
-                #     rgb_with_group_strips[:final_pattern.shape[0], iter_idx, :] = final_pattern
-                # else:
-                rgb_with_group_strips[1::spacing, iter_idx, :] = 200
-                iter_idx += 1
-                print("skipping")
-                for _ in range(mg + 1):
-                    rgb_with_group_strips[:, iter_idx, :] = coefs_image[:, mode_idx, :]
-                    mode_idx += 1
-                    iter_idx += 1
-            iter_idx += pol_gap
-        return rgb_with_group_strips
-
-
-import threading
-from time import sleep
-
-class DigHoloFeeder(threading.Thread):
-    """
-    Each iteration take frame and process it.
-    So digholo internal viewport buffer is updated for viewports and current values
-    """
-    def __init__(self, cam, dh, cam_rows_range=(0, 256), callback=None, stop_event=None, loop_period=0.1, startStream=True):
-        super().__init__()
-        self._cam = cam
-        self._dh = dh
-        self._rows_range = cam_rows_range
-        self._callback = callback
-        self._loop_period = loop_period
-
-        self.stop_event = stop_event or threading.Event()
-
-        if startStream:
-            self.start()
-
-    def run(self):
-        try:
-            self._dh.setProps(batchCount=1)
-            while not self.stop_event.is_set():
-                raw_calib_frame, times, counts = self._cam.grabTail(1)
-                calib_frame = raw_calib_frame[self._rows_range[0], :self._rows_range[1], :]
-                coefs = self._dh.processBatch(calib_frame.astype(np.float32), CalculateMetrics=False)
-
-                if self._callback:
-                    self._callback(coefs)
-                sleep(self._loop_period)
-        except Exception as e:
-            print(f"[CalibrationThread] Error: {e}")
-
-    def stop(self):
-        self.stop_event.set()
-
-from pathlib import Path
-
-class ConsoleLogger:
-    """
-    Tried to link DigHolo console file to python logging
-    does not work
-    """
-    def __init__(self, logger_name="DllLogger"):
-        """
-        dll: ctypes.CDLL instance
-        filename: File where DLL console will be redirected
-        logger_name: Name for Python logger
-        """
-
-        from importlib.resources import files
-        file_path = str(files("modelabdrivers.digHolo").joinpath(f"{CONSOLE_FILENAME}"))
-        log.debug(f"file_path of console: {file_path}")
-        self.path = Path(file_path)
-        self._stop_event = threading.Event()
-        self._thread = None
-        self._last_pos = 0
-        self.logger = logging.getLogger(logger_name)
-        self.logger.setLevel(logging.INFO)
-
-    def _watch_file(self):
-        """Background thread: tails the file and logs new lines."""
-        try:
-            while not self._stop_event.is_set():
-                log.debug("watch file cycle")
-                if self.path.exists():
-                    log.debug("path exists")
-
-                    with self.path.open("r", encoding="utf-8", errors="ignore") as f:
-                        if self.path.exists():
-                            # Detect if file was replaced
-                            stat = self.path.stat()
-                            inode = (stat.st_ino, stat.st_size)
-                            if inode != self._last_inode:
-                                log.debug("Detected file change or recreation")
-                                self._last_pos = 0
-                                self._last_inode = inode
-
-                            with self.path.open("r", encoding="utf-8", errors="ignore") as f:
-                                f.seek(self._last_pos)
-                                lines = f.readlines()
-                                if lines:
-                                    for line in lines:
-                                        self.logger.info(f"[DLL] {line.strip()}")
-                                    self._last_pos = f.tell()
-                time.sleep(0.1)
-        except Exception as e:
-            log.exception("Exception in _watch_file thread: %s", e)
-
-    def start(self):
-        """Redirect DLL console output to file and start watcher."""
-        # if dh_dll.digHoloConsoleRedirectToFile(str(self.filename).encode("utf-8")) != 0:
-        #     raise RuntimeError("Failed to redirect DLL console output.")
-        self._thread = threading.Thread(target=self._watch_file, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        """Restore DLL console and stop watcher."""
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join()
-        dh_dll.digHoloConsoleRestore()
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.stop()
+    @staticmethod
+    def add_mg_strips(coefs_image, max_MG=22, pol_count=2, pol_gap=10):
+        return utilities.add_mg_strips(coefs_image, max_MG, pol_count, pol_gap)

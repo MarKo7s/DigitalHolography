@@ -1,7 +1,14 @@
 .cursor/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 
 # Camera batches are hundreds of megabytes each.
 data_testing/*.mat
 data_testing/*.npz
+
+digHoloConsole.txt
+FFTW_WISDOM*
+test/calib_data/

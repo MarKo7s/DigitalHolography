@@ -1,0 +1,11 @@
+name: digholo_env
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy
+      - scipy
+      - matplotlib
+      - "pyDigHolo @ git+https://github.com/MarKo7s/DigitalHolography.git@v0.1.0"
