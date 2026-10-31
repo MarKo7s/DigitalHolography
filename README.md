@@ -115,9 +115,16 @@ dh.setProps(
 dh.getProps()   # sync dict from DLL where getters exist
 ```
 
-## Typical use: offline engine
+## Frame layout (important)
 
-Frames must be float32, shape `(batch, height, width)` (or 2D for a single frame).
+digHolo expects each frame as **height × width** with:
+
+- **Dual polarisation side-by-side (horizontal):** H and V share one image with pols next to each other along **width**, not stacked vertically. Set `polCount=2` accordingly.
+- **Dimensions multiples of 16:** FFT constraints require `FrameHeight` and `FrameWidth` divisible by 16. `processBatch` and `DigHoloFeeder` **automatically crop** the top-left region down to the next multiple of 16 and sync those props — same rule as the lab notebooks (`H -= H % 16`, `W -= W % 16`).
+
+Pass float32 arrays shaped `(batch, height, width)` (or 2D for one frame).
+
+## Typical use: offline engine
 
 ```python
 import numpy as np
@@ -127,12 +134,12 @@ dh = DigHolo()
 dh.setProps(PixelSize=20e-6, Wavelength=1310e-9, polCount=2, maxMG=22,
             fftWindowSizeX=128, fftWindowSizeY=128)
 
-# frames_h: float32, (N, H, W) contiguous
-coefs = dh.processBatch(frames_h[None, 0, ...], batchCount=1)
+# frames: float32, (N, H, W); H/W need not already be % 16 — processBatch crops
+coefs = dh.processBatch(frames[None, 0, ...], batchCount=1)
 fields = dh.getFields()          # complex (batch, pol, w, h)
 img, meta = dh.getViewPort(1)    # RGB bitmap + [unit, value, dims]
 
-# Optional: copy buffer so digHolo does not alias your array
+# Optional: copy so digHolo does not alias your array after return
 coefs = dh.processBatch(frames, batchCount=1, makeBufferCopy=True)
 ```
 
@@ -140,50 +147,60 @@ Viewport modes: `1` camera, `2`–`5` Fourier variants, `6`–`8` reconstructed 
 
 ## Streaming from a camera
 
-`DigHoloFeeder` runs a thread that calls a camera grab method (e.g. `get_tail`) and feeds `processBatch`. Use a ring buffer large enough for averaging: `get_tail(n)` returns at most `ring_buffer_size - 1` frames.
+`DigHoloFeeder` is **camera-agnostic**. It only needs:
+
+1. Any object that exposes a **grab method** returning the last *N* frames from a buffer — either an `ndarray` `(N, H, W)` / `(H, W)`, or `(ndarray, …)` (e.g. frames + ids).
+2. That method’s **name** as a string (`cam_grab_ufunc_name`).
+3. Enough buffered frames for your `averaging` (if the buffer is smaller than *N*, you get fewer frames and a warning).
+
+You can use ModeLab’s [`cameras`](https://github.com/MarKo7s/cameras) package (example below), or any other driver with a compatible buffer API.
 
 ```python
-from cameras.alliedvision import VimbaXInterface, VimbaXCamera
-from cameras import pyVimbaX
 from pyDigHolo import DigHolo, DigHoloFeeder
+
+# --- example with ModeLab cameras (optional) ---
+# pip install "cameras[gui] @ git+https://github.com/MarKo7s/cameras.git@v…"
+from cameras.alliedvision import VimbaXInterface, VimbaXCamera
 
 iface = VimbaXInterface()
 raw = iface._cameras_found[0]
-# ring must fit averaging: n <= ring_buffer_size - 1
+# ring depth must allow averaging: get_tail(n) returns at most ring_buffer_size - 1
 cam = VimbaXCamera(raw, ring_buffer_size=32, camera_buffer_size=16)
 cam.start_streaming()
+grab_name = "get_tail"
+# --- end example; substitute your own cam + grab_name ---
 
-frame, _ = cam.get_tail(1)
-frame_H, frame_W = frame.shape[-2], frame.shape[-1]
+frame, _ = cam.get_tail(1)          # or your grab(1)
+# shape (1, H, W) or (H, W); dual-pol: H|V along width
+_, frame_H, frame_W = frame.shape if frame.ndim == 3 else (1, *frame.shape)
 
 dh = DigHolo()
 dh.setProps(
     PixelSize=6.9e-6,
     Wavelength=843.5e-9,
     polCount=2,
-    FrameWidth=frame_W,
+    FrameWidth=frame_W,             # feeder snaps these to % 16 if needed
     FrameHeight=frame_H,
     fftWindowSizeX=128,
     fftWindowSizeY=128,
     FFTRadius=0.5,
-    # BeamCentre*, tilts, etc. after alignment
 )
 
 streamer = DigHoloFeeder(
     dh_Object=dh,
-    cam_Object=cam,
-    cam_grab_ufunc_name="get_tail",
+    cam_Object=cam,                 # any object with the grab method
+    cam_grab_ufunc_name=grab_name,  # called as getattr(cam, name)(averaging)
     averaging=1,
     startStream=True,
     refresh_rate_fps=30,
 )
 
 streamer.get_processing_stats()   # (processing_fps, loop_fps)
-streamer.set_averaging(8)         # needs ring_buffer_size > 8
+streamer.set_averaging(8)         # needs buffer depth > 8
 # streamer.pause() / resume() / kill()
 ```
 
-While the feeder runs you can still call `dh.setProps(...)` for alignment knobs (centres, tilts, waist, FFT radius). Batch processing and camera-plane viewport reads share `_process_grab_lock` so the UI and feeder do not race inside the DLL.
+While the feeder runs you can still call `dh.setProps(...)` for alignment (centres, tilts, waist, FFT radius). Batch processing and camera-plane viewport reads share `_process_grab_lock` so the UI and feeder do not race inside the DLL.
 
 ## Live viewport widget
 

@@ -3,14 +3,19 @@ from time import perf_counter, sleep
 
 import numpy as np
 
+from .digholoUtilities import crop_frames_to_multiple_of_16, snap_hw_multiple_of_16
+
 COPY_CAMERA_BUFFER_FRAMES = False
 
 class DigHoloFeeder(threading.Thread):
     """
-    Allows to process frames using diholoObject streaming frames from a generic cameraObject
-    Pass the cameraObject and a the function name as a string that trigger frames from the camera.
-    It does need to support grab from a buffer X amount of frames.
-    Desired refresh rate (fps), if set to None, loop at max possible rate which is clipped to 240 fps (it will attempt anyways).
+    Stream frames from any camera-like object into DigHolo.processBatch.
+
+    Pass the camera object and the name of a method that returns the last N
+    frames from a buffer (ndarray or (ndarray, ...)). digHolo needs H and W
+    multiples of 16; the feeder snaps DigHolo FrameHeight/Width and crops
+    grabs automatically. Dual-pol layouts should place H|V side-by-side
+    (horizontal), not stacked vertically.
     """
     def __init__(self, dh_Object, cam_Object, cam_grab_ufunc_name:str, averaging = 1, startStream=True, refresh_rate_fps = None, callback=None):
         super().__init__()
@@ -31,11 +36,14 @@ class DigHoloFeeder(threading.Thread):
         if not callable(self._grab_ufunc):
             raise ValueError(f"cam_grab_ufunc_name must be a callable, got {type(self._grab_ufunc)}")
 
-        self._dh_frame_W = self._dh.getProps()["FrameWidth"]
-        self._dh_frame_H = self._dh.getProps()["FrameHeight"]
-
-        self._frame_W = self._dh_frame_W
-        self._frame_H = self._dh_frame_H
+        props = self._dh.getProps()
+        h16, w16 = snap_hw_multiple_of_16(props["FrameHeight"], props["FrameWidth"])
+        if h16 != props["FrameHeight"] or w16 != props["FrameWidth"]:
+            self._dh.setProps(FrameHeight=h16, FrameWidth=w16)
+        self._frame_H = h16
+        self._frame_W = w16
+        self._dh_frame_H = h16
+        self._dh_frame_W = w16
 
         #Thread control:
         self._kill_tread = False
@@ -57,11 +65,13 @@ class DigHoloFeeder(threading.Thread):
 
     def _grab_frames(self):
         result = self._grab_ufunc(self._averaging)
-        if isinstance(result, tuple):
-            
-            return result[0][:, :self._frame_H, :self._frame_W]
-        else:
-            return result[:, :self._frame_H, :self._frame_W]
+        frames = result[0] if isinstance(result, tuple) else result
+        frames = np.asarray(frames)
+        if frames.ndim == 2:
+            frames = frames[None, ...]
+        # digHolo: H/W multiples of 16; keep configured ROI (top-left crop)
+        frames = crop_frames_to_multiple_of_16(frames)
+        return frames[:, : self._frame_H, : self._frame_W]
 
     def _update_frame_size_from_dh(self):
         self._dh_frame_W = self.dh.getProps()["FrameWidth"]

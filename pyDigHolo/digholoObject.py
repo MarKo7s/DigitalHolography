@@ -280,6 +280,7 @@ class DigHolo:
 
         """
 
+        frameBuffer = self._prepare_frame_buffer(frameBuffer)
         self.props.check_batch_shape(frameBuffer.shape, batchCount, AvgCount)
         self.props.apply_batch_counts(dh_dll, self._handleIdx)
         with self._process_grab_lock:
@@ -309,7 +310,20 @@ class DigHolo:
         return coefs
 
 
+    def _prepare_frame_buffer(self, frameBuffer):
+        """Contiguous float32 crop so H/W are multiples of 16; sync FrameHeight/Width."""
+        frameBuffer = np.asarray(frameBuffer)
+        cropped = utilities.crop_frames_to_multiple_of_16(frameBuffer)
+        h, w = int(cropped.shape[-2]), int(cropped.shape[-1])
+        props = self.props.as_dict()
+        if props["FrameHeight"] != h or props["FrameWidth"] != w:
+            self.setProps(FrameHeight=h, FrameWidth=w)
+        if cropped is not frameBuffer and not cropped.flags["C_CONTIGUOUS"]:
+            cropped = np.ascontiguousarray(cropped)
+        return cropped
+
     def proccesBatchFrequencySweepLinear(self, frameBuffer, lambdaStart: float, lambdaStop: float, lambdaCount: int, makeBufferCopy = False):
+        frameBuffer = self._prepare_frame_buffer(frameBuffer)
         self.props.check_batch_shape(frameBuffer.shape)
         self.props.apply_batch_counts(dh_dll, self._handleIdx)
 

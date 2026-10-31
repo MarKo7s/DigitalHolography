@@ -1,5 +1,34 @@
 import numpy as np
 
+_DIGHOLO_DIM_QUANTUM = 16
+
+
+def snap_dim_multiple_of_16(value: int) -> int:
+    """Round *down* to a multiple of 16 (digHolo FFT constraint)."""
+    value = int(value)
+    snapped = value - (value % _DIGHOLO_DIM_QUANTUM)
+    if snapped <= 0:
+        raise ValueError(
+            f"Frame dimension {value} is too small; need at least {_DIGHOLO_DIM_QUANTUM} "
+            f"(digHolo requires multiples of {_DIGHOLO_DIM_QUANTUM})."
+        )
+    return snapped
+
+
+def snap_hw_multiple_of_16(height: int, width: int) -> tuple[int, int]:
+    return snap_dim_multiple_of_16(height), snap_dim_multiple_of_16(width)
+
+
+def crop_frames_to_multiple_of_16(frames: np.ndarray) -> np.ndarray:
+    """Crop trailing rows/cols so H and W are multiples of 16 (keeps top-left)."""
+    if frames.ndim < 2:
+        raise ValueError(f"Expected at least HxW, got shape {frames.shape}")
+    h, w = int(frames.shape[-2]), int(frames.shape[-1])
+    h2, w2 = snap_hw_multiple_of_16(h, w)
+    if h2 == h and w2 == w:
+        return frames
+    return np.ascontiguousarray(frames[..., :h2, :w2])
+
 
 def interleave_complex64_to_float32(matrix: np.ndarray) -> np.ndarray:
     """Convert a complex64 matrix to a float32 array with interleaved [real, imag]"""
