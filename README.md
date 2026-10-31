@@ -4,7 +4,7 @@
 
 The Python wrapper around that DLL, including the ctypes header and the C++/DLL calling layer, was written by Daniel Dahl. This repository starts from that wrapper.
 
-`pyDigHolo` is the engine module inside this repository. Settings live in `Properties`. Helpers, the logger, the feeder, result readers, config, and UI sit beside `DigHolo`.
+`pyDigHolo` is ModeLab’s engine package around that DLL: configure hologram processing with `setProps`, run batches offline or from a camera stream, inspect results, and optionally open a live viewport UI.
 
 ## Install
 
@@ -29,33 +29,169 @@ pip install -e .
 pip install -e ".[gui]"
 ```
 
-A conda environment with only Python and pip, and the scientific packages from pip:
-
 ```bash
 conda env create -f environment.yml
 ```
 
-On Windows, install PySide6 (and other Qt deps) via pip in that env — do not mix conda Qt with pip PySide6.
+On Windows, install PySide6 (and other Qt deps) via pip — do not mix conda Qt with pip PySide6.
 
 ## Layout
 
-`DigHolo` keeps the DLL handle, the frame pointer, coefficient unpacking, and a process lock used around batch + camera-viewport access. `Properties` holds the settings dictionary. `digholoResults` reads fields, coefficients, Fourier planes, and viewports. `digholoStreamer.DigHoloFeeder` feeds camera frames into `processBatch`. `pyDigHolo.ui.DigHoloViewport` is the multi-mode live viewport window. `pyDigHolo/config/appSettings.json` holds logger paths and related flags.
+| Piece | Role |
+|-------|------|
+| `DigHolo` | DLL handle, `setProps` / `processBatch`, process lock, results |
+| `Properties` | Settings dictionary applied to / read from the DLL |
+| `digholoResults` | Fields, coefficients, Fourier planes, viewports |
+| `DigHoloFeeder` | Background thread: camera frames → `processBatch` |
+| `pyDigHolo.ui.DigHoloViewport` | Live multi-mode viewport windows |
+| `config/appSettings.json` | Logger paths and flags |
 
-## Threading and buffers
+## What digHolo does (brief)
 
-digHolo does **not** own a private copy of every buffer you pass in. `digHoloSetBatch` points the engine at your float32 frame memory; viewport plotting also uses shared internal RGB / title buffers. Concurrent `processBatch` (e.g. from `DigHoloFeeder`) and `getViewPort` without synchronization can crash or return corrupt titles.
+Off-axis digital holography recovers the complex optical field from a camera interferogram (signal + tilted reference). digHolo:
 
-The wrapper therefore:
+1. Takes a window around each polarisation’s beam centre on the camera (`fftWindowSize*`, `BeamCentre*`).
+2. FFTs into the Fourier plane and keeps an off-axis aperture (`FFTRadius`).
+3. IFFTs to a reconstructed field (`resolutionMode`).
+4. Projects that field onto a modal basis (`basisType`, `maxMG`) and returns complex coefficients.
 
-- Holds `_process_grab_lock` for `SetBatch` / `ProcessBatch` (and the matching path on frequency sweep).
-- Locks camera-plane viewport reads (`getViewPort(1)`), which touch the live frame path.
-- Offers `makeBufferCopy=True` on `processBatch` when the source array may be overwritten before the DLL finishes using it.
+`setProps(...)` writes those knobs into the DLL. Defaults live in `Properties.defaults()`.
 
-Keep feeder + UI on the same `DigHolo` instance and treat that lock as required for live streaming.
+### `setProps` fields
 
-## Viewport UI
+**Source / batch**
+
+| Key | Meaning |
+|-----|---------|
+| `PixelSize` | Camera pixel pitch (m). |
+| `Wavelength` | Centre wavelength (m). |
+| `WavelengthCount` | Number of wavelengths (set when applying a wavelength axis). |
+| `FrameWidth` / `FrameHeight` | Frame size in pixels (often updated from the buffer you process). |
+| `polCount` | Polarisations (1 or 2). |
+| `batchCount` | Independent frames in one batch (e.g. spatial channels). |
+| `AvgCount` | Frames averaged per batch element before decomposition. |
+
+**Fourier window**
+
+| Key | Meaning |
+|-----|---------|
+| `fftWindowSizeX` / `fftWindowSizeY` | Camera-plane FFT window size (pixels). |
+| `FFTRadius` | Fourier-plane aperture radius (fraction of the plane). |
+| `BeamCentreXPolH/V`, `BeamCentreYPolH/V` | FFT window centre per polarisation (pixels). |
+| `XTilt*`, `YTilt*` | Reference tilt / off-axis carrier (degrees-related DLL units). |
+| `DefocusPolH/V` | Defocus term per polarisation. |
+| `resolutionMode` | Reconstructed-field sampling (full vs Fourier-window native). |
+
+**Modal basis**
+
+| Key | Meaning |
+|-----|---------|
+| `basisType` | `0` HG, `1` LG, `2` custom. |
+| `maxMG` | Highest mode group / basis extent. |
+| `BasisWaistPolH/V` | Basis waist scale per polarisation. |
+| `goalIdx` | Auto-align metric (`IL`, `MDL`, … — see `digholoMetrics`). |
+
+**Auto-align flags** (`1` = enabled)
+
+`AutoAlignBeamCentre`, `AutoAlignDefocus`, `AutoAlignTilt`, `AutoAlignBasisWaist`, `AutoAlignFourierWindowRadius`.
+
+**Misc:** `verbosity` — DLL console detail.
 
 ```python
+from pyDigHolo import DigHolo
+
+dh = DigHolo()
+dh.setProps(
+    PixelSize=6.9e-6,
+    Wavelength=843.5e-9,
+    polCount=2,
+    maxMG=22,
+    fftWindowSizeX=128,
+    fftWindowSizeY=128,
+    FFTRadius=0.5,
+    basisType=0,
+    resolutionMode=0,
+)
+dh.getProps()   # sync dict from DLL where getters exist
+```
+
+## Typical use: offline engine
+
+Frames must be float32, shape `(batch, height, width)` (or 2D for a single frame).
+
+```python
+import numpy as np
+from pyDigHolo import DigHolo
+
+dh = DigHolo()
+dh.setProps(PixelSize=20e-6, Wavelength=1310e-9, polCount=2, maxMG=22,
+            fftWindowSizeX=128, fftWindowSizeY=128)
+
+# frames_h: float32, (N, H, W) contiguous
+coefs = dh.processBatch(frames_h[None, 0, ...], batchCount=1)
+fields = dh.getFields()          # complex (batch, pol, w, h)
+img, meta = dh.getViewPort(1)    # RGB bitmap + [unit, value, dims]
+
+# Optional: copy buffer so digHolo does not alias your array
+coefs = dh.processBatch(frames, batchCount=1, makeBufferCopy=True)
+```
+
+Viewport modes: `1` camera, `2`–`5` Fourier variants, `6`–`8` reconstructed field variants (`VIEWPORT_MODES` in `pyDigHolo.ui`).
+
+## Streaming from a camera
+
+`DigHoloFeeder` runs a thread that calls a camera grab method (e.g. `get_tail`) and feeds `processBatch`. Use a ring buffer large enough for averaging: `get_tail(n)` returns at most `ring_buffer_size - 1` frames.
+
+```python
+from cameras.alliedvision import VimbaXInterface, VimbaXCamera
+from cameras import pyVimbaX
+from pyDigHolo import DigHolo, DigHoloFeeder
+
+iface = VimbaXInterface()
+raw = iface._cameras_found[0]
+# ring must fit averaging: n <= ring_buffer_size - 1
+cam = VimbaXCamera(raw, ring_buffer_size=32, camera_buffer_size=16)
+cam.start_streaming()
+
+frame, _ = cam.get_tail(1)
+frame_H, frame_W = frame.shape[-2], frame.shape[-1]
+
+dh = DigHolo()
+dh.setProps(
+    PixelSize=6.9e-6,
+    Wavelength=843.5e-9,
+    polCount=2,
+    FrameWidth=frame_W,
+    FrameHeight=frame_H,
+    fftWindowSizeX=128,
+    fftWindowSizeY=128,
+    FFTRadius=0.5,
+    # BeamCentre*, tilts, etc. after alignment
+)
+
+streamer = DigHoloFeeder(
+    dh_Object=dh,
+    cam_Object=cam,
+    cam_grab_ufunc_name="get_tail",
+    averaging=1,
+    startStream=True,
+    refresh_rate_fps=30,
+)
+
+streamer.get_processing_stats()   # (processing_fps, loop_fps)
+streamer.set_averaging(8)         # needs ring_buffer_size > 8
+# streamer.pause() / resume() / kill()
+```
+
+While the feeder runs you can still call `dh.setProps(...)` for alignment knobs (centres, tilts, waist, FFT radius). Batch processing and camera-plane viewport reads share `_process_grab_lock` so the UI and feeder do not race inside the DLL.
+
+## Live viewport widget
+
+With `[gui]` installed and a `DigHolo` already processing (offline loop or feeder):
+
+```python
+%gui qt   # in Jupyter
+
 from pyDigHolo.ui import DigHoloViewport
 
 vp = DigHoloViewport(dh, refresh_rate_fps=20)
@@ -63,9 +199,25 @@ vp.show()
 vp.start()
 ```
 
-Checkboxes open floating plots (tiled from the top-left). Snap / float buttons group or separate them. Viewport file logs go under `%PROGRAMDATA%\LAB\algorithms\DigitalHolography\Viewport\` (see `appSettings.json`; `reset_logger` truncates on each new `DigHoloViewport`).
+- **Modes** panel: checkboxes open floating plots (camera, Fourier, field, …), tiled from the top-left.
+- **Snap all / Float all**: group into one window or separate again.
+- Closing a plot (or the snap host) clears the matching checkbox(es).
+- Window size follows array aspect ratio and `VIEWPORT_DEFAULT_SIZE` in `digholoViewportViews.py`.
+- Logs: `%PROGRAMDATA%\LAB\algorithms\DigitalHolography\Viewport\DigHoloViewport.log` (`appSettings.json`; `reset_logger` truncates each new `DigHoloViewport`).
 
-Camera averaging needs a ring buffer large enough for `get_tail(n)` (`n <= ring_buffer_size - 1`).
+<!-- gui-screenshot -->
+![DigHolo Viewport](docs/images/gui.png)
+<!-- /gui-screenshot -->
+
+Further widgets can attach the same way: hold a `DigHolo` reference, poll under the process lock where needed, and call `setProps` / result getters for live controls.
+
+## Threading and buffers
+
+digHolo points at your float32 frame memory via `digHoloSetBatch`; viewport RGB/title buffers are also shared inside the DLL. Concurrent `processBatch` and `getViewPort` without the wrapper lock can crash or corrupt titles.
+
+- Lock covers `SetBatch` / `ProcessBatch` (and frequency-sweep batch).
+- Camera-plane `getViewPort(1)` takes the same lock.
+- Use `makeBufferCopy=True` when the source array may change before the DLL is done.
 
 ## Versioning
 
