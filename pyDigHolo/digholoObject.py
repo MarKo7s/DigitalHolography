@@ -9,6 +9,8 @@ import json
 import logging
 from pathlib import Path
 
+from threading import Lock
+
 
 log = logging.getLogger("digHolo")
 
@@ -92,6 +94,8 @@ class DigHolo:
         self._thread_feeder = None
         self.props = Properties()
         self._properties = self.props.as_dict()
+        self._batch_frame_buffer_ptr = None
+        self._process_grab_lock = Lock()
         self.setProps(**kwargs)  # update self._properties and digholo.dll setProps
 
         if consoleRedirectToFile:
@@ -259,7 +263,7 @@ class DigHolo:
         return coefs, metrics
 
     # This is if you dont want digiholo to change any of its setting but you want to process some frames
-    def processBatch(self, frameBuffer, CalculateMetrics=False, batchCount=1, AvgCount=0, AvgMode=dh_dll.DIGHOLO_AVGMODE_SEQUENTIAL):
+    def processBatch(self, frameBuffer, CalculateMetrics=False, batchCount=1, AvgCount=0, AvgMode=dh_dll.DIGHOLO_AVGMODE_SEQUENTIAL, makeBufferCopy = False):
         """
         Setting the parameters for processing a batch of batchCount frames stored in a float32 frameBuffer the first entry.
         'digHoloSetBatch*()' called before calling digHoloProcessBatch().
@@ -278,24 +282,21 @@ class DigHolo:
 
         self.props.check_batch_shape(frameBuffer.shape, batchCount, AvgCount)
         self.props.apply_batch_counts(dh_dll, self._handleIdx)
-
-        frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
-        if AvgCount>1:
-           dh_dll.digHoloSetBatchAvg(self._handleIdx, self.props.get_batch_count(), frameBufferPtr,
-                                        self.props.get_avg_count(), AvgMode)
-
-
-
-
-        """
-        Processes a batch of frames using the current settings, and returns a modal decomposition of the
-        resulting fields.
-        """
-        # can be replaced by self.basisGetCoefs?
-        batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
-        modeCount_c= ctypes.c_int()
-        CoefptrOut = dh_dll.digHoloProcessBatch(self._handleIdx,ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c))
+        with self._process_grab_lock:
+            self._batch_frame_buffer_ptr = frameBuffer.copy() if makeBufferCopy else frameBuffer #Keep pointing to the original frame buffer or copy it
+            frameBufferPtr = self._batch_frame_buffer_ptr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
+            if AvgCount>1:
+                dh_dll.digHoloSetBatchAvg(self._handleIdx, self.props.get_batch_count(), frameBufferPtr,
+                                            self.props.get_avg_count(), AvgMode)
+            """
+            Processes a batch of frames using the current settings, and returns a modal decomposition of the
+            resulting fields.
+            """
+            # can be replaced by self.basisGetCoefs?
+            batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
+            modeCount_c= ctypes.c_int()
+            CoefptrOut = dh_dll.digHoloProcessBatch(self._handleIdx,ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c))
 
 
         coefs = np.ctypeslib.as_array(CoefptrOut, shape=(batchCount_c.value,2*modeCount_c.value*polCount_c.value))  # NOTE the 2 is to account for complex values
@@ -308,21 +309,23 @@ class DigHolo:
         return coefs
 
 
-    def proccesBatchFrequencySweepLinear(self, frameBuffer, lambdaStart: float, lambdaStop: float, lambdaCount: int):
+    def proccesBatchFrequencySweepLinear(self, frameBuffer, lambdaStart: float, lambdaStop: float, lambdaCount: int, makeBufferCopy = False):
         self.props.check_batch_shape(frameBuffer.shape)
         self.props.apply_batch_counts(dh_dll, self._handleIdx)
 
-        frameBufferPtr = frameBuffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
+        with self._process_grab_lock:
+            self._batch_frame_buffer_ptr = frameBuffer.copy() if makeBufferCopy else frameBuffer #Keep pointing to the original frame buffer or copy it
+            frameBufferPtr = self._batch_frame_buffer_ptr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+            dh_dll.digHoloSetBatch(self._handleIdx, self.props.get_batch_count(), frameBufferPtr)
 
 
-        # proccess batch
-        batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
-        modeCount_c = ctypes.c_int()
-        CoefptrOut = dh_dll.digHoloProcessBatchFrequencySweepLinear(self._handleIdx,
-                                                              ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c),
-                                                              lambdaStart, lambdaStop, lambdaCount
-                                                              )
+            # proccess batch
+            batchCount_c, polCount_c = self.props.get_batch_and_pol_counts()
+            modeCount_c = ctypes.c_int()
+            CoefptrOut = dh_dll.digHoloProcessBatchFrequencySweepLinear(self._handleIdx,
+                                                                ctypes.byref(batchCount_c),ctypes.byref(modeCount_c),ctypes.byref(polCount_c),
+                                                                lambdaStart, lambdaStop, lambdaCount
+                                                                )
         self.updateWavelenghts()
         coefs = np.ctypeslib.as_array(CoefptrOut, shape=(batchCount_c.value, 2 * modeCount_c.value * polCount_c.value))  # NOTE the 2 is to account for complex values
         coefs = coefs[:, 0::2] + 1j * coefs[:, 1::2]
@@ -457,7 +460,16 @@ class DigHolo:
 
     def getViewPort(self, idx: int, forceProcessing=0):
         """RGB bitmap of an internal buffer. idx 0-9 selects the viewport."""
-        return results.getViewPort(dh_dll, self._handleIdx, idx, forceProcessing)
+        if idx == 0:
+            print("Allowed viewports are: 1-9")
+            return None
+        #! Protect viewport 1 since it does not copy the frame and some thread could be setting a new processbatch and other trying to read the viewport
+        #! No need for lock with the other viewports since they copy the frame and it is handled by C++
+        if idx == 1:
+            with self._process_grab_lock:
+                return results.getViewPort(dh_dll, self._handleIdx, idx, forceProcessing)
+        else:
+            return results.getViewPort(dh_dll, self._handleIdx, idx, forceProcessing)
 
 
 

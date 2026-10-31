@@ -1,11 +1,18 @@
 [project]
 name = "pyDigHolo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python engine for Joel Carpenter's digHolo library"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+gui = [
+  "PySide6>=6.5",
+  "pyqtgraph>=0.13",
+  "PySide6-QtAds>=4.0",
 ]
 
 [project.urls]
@@ -16,7 +23,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pyDigHolo"]
+packages = ["pyDigHolo", "pyDigHolo.ui", "pyDigHolo.config"]
 
 [tool.setuptools.package-data]
-pyDigHolo = ["digHolo_v1.0.0/bin/Win64/*"]
+pyDigHolo = ["digHolo_v1.0.0/bin/Win64/*", "config/appSettings.json"]
